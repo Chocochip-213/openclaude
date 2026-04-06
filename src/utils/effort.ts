@@ -33,6 +33,17 @@ export function modelSupportsEffort(model: string): boolean {
   if (isEnvTruthy(process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT)) {
     return true
   }
+  // OpenAI/Codex models: GPT-5.x and codex models support reasoning effort
+  const provider = getAPIProvider()
+  if (provider === 'openai' || provider === 'codex') {
+    return (
+      m.includes('gpt-5') ||
+      m.includes('codex') ||
+      m.includes('o1') ||
+      m.includes('o3') ||
+      m.includes('o4')
+    )
+  }
   const supported3P = get3PModelCapabilityOverride(model, 'effort')
   if (supported3P !== undefined) {
     return supported3P
@@ -53,11 +64,12 @@ export function modelSupportsEffort(model: string): boolean {
   // Default to true for unknown model strings on 1P.
   // Do not default to true for 3P as they have different formats for their
   // model strings (ex. anthropics/claude-code#30795)
-  return getAPIProvider() === 'firstParty'
+  return provider === 'firstParty'
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'max' effort.
 // Per API docs, 'max' is Opus 4.6 only for public models — other models return an error.
+// For OpenAI/Codex: 'max' maps to 'xhigh' — supported by GPT-5.x codex models.
 export function modelSupportsMaxEffort(model: string): boolean {
   const supported3P = get3PModelCapabilityOverride(model, 'max_effort')
   if (supported3P !== undefined) {
@@ -65,6 +77,12 @@ export function modelSupportsMaxEffort(model: string): boolean {
   }
   if (model.toLowerCase().includes('opus-4-6')) {
     return true
+  }
+  // OpenAI/Codex: GPT-5.x codex models support xhigh (mapped from max)
+  const provider = getAPIProvider()
+  if (provider === 'openai' || provider === 'codex') {
+    const m = model.toLowerCase()
+    return m.includes('codex') || m.includes('gpt-5')
   }
   if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
     return true
@@ -252,6 +270,8 @@ export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
     // Runtime guard: value may come from remote config (GrowthBook) where
     // TypeScript types can't help us. Coerce unknown strings to 'high'
     // rather than passing them through unchecked.
+    // OpenAI effort 'xhigh' maps to standard 'max'.
+    if (isOpenAIEffortLevel(value)) return openAIEffortToStandard(value)
     return isEffortLevel(value) ? value : 'high'
   }
   if (process.env.USER_TYPE === 'ant' && typeof value === 'number') {

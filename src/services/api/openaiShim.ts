@@ -40,6 +40,7 @@ import {
   resolveCodexApiCredentials,
   resolveProviderRequest,
 } from './providerConfig.js'
+import { ensureValidCodexOAuthTokens } from './codexOAuth.js'
 import { sanitizeSchemaForOpenAICompat } from '../../utils/schemaSanitizer.js'
 import { redactSecretValueForDisplay } from '../../utils/providerProfile.js'
 
@@ -771,7 +772,15 @@ class OpenAIShimMessages {
     let httpResponse: Response | undefined
 
     const promise = (async () => {
-      const request = resolveProviderRequest({ model: self.providerOverride?.model ?? params.model, baseUrl: self.providerOverride?.baseURL, reasoningEffortOverride: self.reasoningEffort })
+      // Resolve reasoning effort from multiple sources (in priority order):
+      // 1. Explicit reasoningEffort from client creation (provider routing)
+      // 2. output_config.effort from Claude API params (from /effort command)
+      // 3. Model alias default from CODEX_ALIAS_MODELS
+      const effortFromParams = (params as Record<string, unknown>).output_config
+        ? ((params as Record<string, unknown>).output_config as Record<string, unknown>)?.effort as string | undefined
+        : undefined
+      const resolvedEffort = self.reasoningEffort ?? effortFromParams as typeof self.reasoningEffort ?? undefined
+      const request = resolveProviderRequest({ model: self.providerOverride?.model ?? params.model, baseUrl: self.providerOverride?.baseURL, reasoningEffortOverride: resolvedEffort })
       const response = await self._doRequest(request, params, options)
       httpResponse = response
 
@@ -815,7 +824,15 @@ class OpenAIShimMessages {
     options?: { signal?: AbortSignal; headers?: Record<string, string> },
   ): Promise<Response> {
     if (request.transport === 'codex_responses') {
-      const credentials = resolveCodexApiCredentials()
+      // Try OAuth token refresh first (for ChatGPT Plus/Pro subscription login)
+      const oauthTokens = await ensureValidCodexOAuthTokens()
+      const credentials = oauthTokens
+        ? {
+            apiKey: oauthTokens.access_token,
+            accountId: oauthTokens.account_id,
+            source: 'auth.json' as const,
+          }
+        : resolveCodexApiCredentials()
       if (!credentials.apiKey) {
         const authHint = credentials.authPath
           ? ` or place a Codex auth.json at ${credentials.authPath}`
@@ -824,12 +841,12 @@ class OpenAIShimMessages {
           redactSecretValueForDisplay(request.requestedModel, process.env as SecretValueSource) ??
           'the requested model'
         throw new Error(
-          `Codex auth is required for ${safeModel}. Set CODEX_API_KEY${authHint}.`,
+          `Codex auth is required for ${safeModel}. Set CODEX_API_KEY${authHint}, or run /provider and select "ChatGPT Plus/Pro" to login with your subscription.`,
         )
       }
       if (!credentials.accountId) {
         throw new Error(
-          'Codex auth is missing chatgpt_account_id. Re-login with the Codex CLI or set CHATGPT_ACCOUNT_ID/CODEX_ACCOUNT_ID.',
+          'Codex auth is missing chatgpt_account_id. Re-login with the Codex CLI, run /provider to login with ChatGPT, or set CHATGPT_ACCOUNT_ID/CODEX_ACCOUNT_ID.',
         )
       }
 
@@ -891,6 +908,16 @@ class OpenAIShimMessages {
     if (isGithub && body.max_completion_tokens !== undefined) {
       body.max_tokens = body.max_completion_tokens
       delete body.max_completion_tokens
+    }
+
+    // Add reasoning effort for OpenAI-compatible models that support it.
+    // Maps from providerConfig's resolved reasoning (from CODEX_ALIAS_MODELS,
+    // ?reasoning=xxx query param, or /effort command) into the API request.
+    // Claude's 'max' maps to OpenAI's 'xhigh'.
+    const rawEffort = request.reasoning?.effort ?? this.reasoningEffort
+    if (rawEffort) {
+      const mapped = rawEffort === 'max' ? 'xhigh' : rawEffort
+      body.reasoning_effort = mapped
     }
 
     if (params.temperature !== undefined) body.temperature = params.temperature

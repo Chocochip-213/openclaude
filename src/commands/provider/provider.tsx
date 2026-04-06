@@ -58,8 +58,14 @@ import {
   hasLocalOllama,
   listOllamaModels,
 } from '../../utils/providerDiscovery.js'
+import {
+  performBrowserOAuthLogin,
+  initiateDeviceCodeLogin,
+  hasCodexOAuthTokens,
+  type DeviceCodeInfo,
+} from '../../services/api/codexOAuth.js'
 
-type ProviderChoice = 'auto' | ProviderProfile | 'clear'
+type ProviderChoice = 'auto' | ProviderProfile | 'clear' | 'chatgpt-oauth'
 
 type Step =
   | { name: 'choose' }
@@ -83,6 +89,9 @@ type Step =
       authMode: 'api-key' | 'access-token' | 'adc'
     }
   | { name: 'codex-check' }
+  | { name: 'chatgpt-oauth' }
+  | { name: 'chatgpt-oauth-device' }
+  | { name: 'chatgpt-oauth-browser-wait' }
 
 type CurrentProviderSummary = {
   providerLabel: string
@@ -457,7 +466,12 @@ function ProviderChooser({
       description: 'Use Google Gemini with API key, access token, or local ADC',
     },
     {
-      label: 'Codex',
+      label: 'ChatGPT Plus/Pro (OAuth Login)',
+      value: 'chatgpt-oauth',
+      description: 'Login with your ChatGPT subscription — no API key needed',
+    },
+    {
+      label: 'Codex (existing credentials)',
       value: 'codex',
       description: 'Use existing ChatGPT Codex CLI auth or env credentials',
     },
@@ -930,6 +944,225 @@ function resolveCodexCredentials(processEnv: NodeJS.ProcessEnv):
   }
 }
 
+// ─── ChatGPT Plus/Pro OAuth Components ───────────────────────────────────────
+
+function ChatGPTOAuthMethodChooser({
+  onChoose,
+  onBack,
+  onCancel,
+}: {
+  onChoose: (method: 'browser' | 'device') => void
+  onBack: () => void
+  onCancel: () => void
+}): React.ReactNode {
+  const alreadyLoggedIn = hasCodexOAuthTokens()
+  return (
+    <Dialog
+      title="ChatGPT Plus/Pro Login"
+      subtitle={alreadyLoggedIn ? 'Existing login found — re-login to refresh' : undefined}
+      onCancel={onBack}
+    >
+      <Box flexDirection="column" gap={1}>
+        <Text>
+          Login with your ChatGPT subscription to use Codex models (GPT-5.x)
+          without a separate API key.
+        </Text>
+        <Select
+          options={[
+            {
+              label: 'Login via Browser',
+              value: 'browser' as const,
+              description: 'Opens your browser for ChatGPT login (recommended)',
+            },
+            {
+              label: 'Login via Device Code',
+              value: 'device' as const,
+              description: 'Enter a code at auth.openai.com — for headless/SSH environments',
+            },
+            { label: 'Back', value: 'back' as const },
+          ]}
+          onChange={value => {
+            if (value === 'back') onBack()
+            else onChoose(value)
+          }}
+          onCancel={onBack}
+        />
+      </Box>
+    </Dialog>
+  )
+}
+
+function ChatGPTBrowserOAuthStep({
+  onSave,
+  onBack,
+  onCancel,
+  onDone,
+}: {
+  onSave: (profile: ProviderProfile, env: ProfileEnv) => void
+  onBack: () => void
+  onCancel: () => void
+  onDone: LocalJSXCommandOnDone
+}): React.ReactNode {
+  const [status, setStatus] = React.useState<'waiting' | 'success' | 'error'>('waiting')
+  const [errorMsg, setErrorMsg] = React.useState('')
+
+  React.useEffect(() => {
+    let cancelled = false
+    performBrowserOAuthLogin()
+      .then(tokens => {
+        if (cancelled) return
+        setStatus('success')
+        const env = buildCodexProfileEnv({
+          model: 'codexplan',
+          apiKey: tokens.access_token,
+          processEnv: {
+            ...process.env,
+            CODEX_API_KEY: tokens.access_token,
+            CHATGPT_ACCOUNT_ID: tokens.account_id,
+          },
+        })
+        if (env) {
+          onSave('codex', env)
+        } else {
+          onDone('ChatGPT login succeeded. Restart OpenClaude with a Codex model to use it.', { display: 'system' })
+        }
+      })
+      .catch(err => {
+        if (cancelled) return
+        setStatus('error')
+        setErrorMsg(err?.message ?? 'Unknown error')
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  if (status === 'error') {
+    return (
+      <Dialog title="ChatGPT Login Failed" onCancel={onCancel} color="warning">
+        <Box flexDirection="column" gap={1}>
+          <Text color="red">{errorMsg}</Text>
+          <Select
+            options={[
+              { label: 'Retry', value: 'retry' },
+              { label: 'Back', value: 'back' },
+              { label: 'Cancel', value: 'cancel' },
+            ]}
+            onChange={value => {
+              if (value === 'back') onBack()
+              else if (value === 'cancel') onCancel()
+              else onBack() // retry goes back to method chooser
+            }}
+            onCancel={onCancel}
+          />
+        </Box>
+      </Dialog>
+    )
+  }
+
+  return (
+    <Dialog title="ChatGPT Login" onCancel={onCancel}>
+      <Box flexDirection="column" gap={1}>
+        <LoadingState text="Opening browser for ChatGPT login..." />
+        <Text dimColor>Complete the login in your browser. This window will update automatically.</Text>
+        <Text dimColor>Press Escape to cancel.</Text>
+      </Box>
+    </Dialog>
+  )
+}
+
+function ChatGPTDeviceCodeStep({
+  onSave,
+  onBack,
+  onCancel,
+  onDone,
+}: {
+  onSave: (profile: ProviderProfile, env: ProfileEnv) => void
+  onBack: () => void
+  onCancel: () => void
+  onDone: LocalJSXCommandOnDone
+}): React.ReactNode {
+  const [deviceInfo, setDeviceInfo] = React.useState<DeviceCodeInfo | null>(null)
+  const [status, setStatus] = React.useState<'loading' | 'waiting' | 'success' | 'error'>('loading')
+  const [errorMsg, setErrorMsg] = React.useState('')
+
+  React.useEffect(() => {
+    let cancelled = false
+    initiateDeviceCodeLogin()
+      .then(({ info, poll }) => {
+        if (cancelled) return
+        setDeviceInfo(info)
+        setStatus('waiting')
+        return poll()
+      })
+      .then(tokens => {
+        if (cancelled || !tokens) return
+        setStatus('success')
+        const env = buildCodexProfileEnv({
+          model: 'codexplan',
+          apiKey: tokens.access_token,
+          processEnv: {
+            ...process.env,
+            CODEX_API_KEY: tokens.access_token,
+            CHATGPT_ACCOUNT_ID: tokens.account_id,
+          },
+        })
+        if (env) {
+          onSave('codex', env)
+        } else {
+          onDone('ChatGPT login succeeded. Restart OpenClaude with a Codex model to use it.', { display: 'system' })
+        }
+      })
+      .catch(err => {
+        if (cancelled) return
+        setStatus('error')
+        setErrorMsg(err?.message ?? 'Unknown error')
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  if (status === 'error') {
+    return (
+      <Dialog title="ChatGPT Login Failed" onCancel={onCancel} color="warning">
+        <Box flexDirection="column" gap={1}>
+          <Text color="red">{errorMsg}</Text>
+          <Select
+            options={[
+              { label: 'Back', value: 'back' },
+              { label: 'Cancel', value: 'cancel' },
+            ]}
+            onChange={value => (value === 'back' ? onBack() : onCancel())}
+            onCancel={onCancel}
+          />
+        </Box>
+      </Dialog>
+    )
+  }
+
+  if (status === 'loading' || !deviceInfo) {
+    return (
+      <Dialog title="ChatGPT Device Code Login" onCancel={onCancel}>
+        <LoadingState text="Requesting device code..." />
+      </Dialog>
+    )
+  }
+
+  return (
+    <Dialog title="ChatGPT Device Code Login" onCancel={onCancel}>
+      <Box flexDirection="column" gap={1}>
+        <Text>
+          Visit: <Text bold color="cyan">{deviceInfo.verificationUrl}</Text>
+        </Text>
+        <Text>
+          Enter code: <Text bold color="green">{deviceInfo.userCode}</Text>
+        </Text>
+        <LoadingState text="Waiting for authorization..." />
+        <Text dimColor>Complete the login on the website above. Press Escape to cancel.</Text>
+      </Box>
+    </Dialog>
+  )
+}
+
+// ─── Provider Wizard ─────────────────────────────────────────────────────────
+
 export function ProviderWizard({
   onDone,
 }: {
@@ -954,6 +1187,8 @@ export function ProviderWizard({
               })
             } else if (value === 'gemini') {
               setStep({ name: 'gemini-auth-method' })
+            } else if (value === 'chatgpt-oauth') {
+              setStep({ name: 'chatgpt-oauth' })
             } else if (value === 'clear') {
               const filePath = deleteProfileFile()
               onDone(`Removed saved provider profile at ${filePath}. Restart OpenClaude to go back to normal startup.`, {
@@ -1292,6 +1527,41 @@ export function ProviderWizard({
           onSave={(profile, env) => finishProfileSave(onDone, profile, env)}
           onBack={() => setStep({ name: 'choose' })}
           onCancel={() => onDone()}
+        />
+      )
+
+    case 'chatgpt-oauth':
+      return (
+        <ChatGPTOAuthMethodChooser
+          onChoose={method => {
+            if (method === 'browser') {
+              setStep({ name: 'chatgpt-oauth-browser-wait' })
+            } else {
+              setStep({ name: 'chatgpt-oauth-device' })
+            }
+          }}
+          onBack={() => setStep({ name: 'choose' })}
+          onCancel={() => onDone()}
+        />
+      )
+
+    case 'chatgpt-oauth-browser-wait':
+      return (
+        <ChatGPTBrowserOAuthStep
+          onSave={(profile, env) => finishProfileSave(onDone, profile, env)}
+          onBack={() => setStep({ name: 'chatgpt-oauth' })}
+          onCancel={() => onDone()}
+          onDone={onDone}
+        />
+      )
+
+    case 'chatgpt-oauth-device':
+      return (
+        <ChatGPTDeviceCodeStep
+          onSave={(profile, env) => finishProfileSave(onDone, profile, env)}
+          onBack={() => setStep({ name: 'chatgpt-oauth' })}
+          onCancel={() => onDone()}
+          onDone={onDone}
         />
       )
   }

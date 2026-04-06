@@ -650,3 +650,112 @@ test('coalesces consecutive assistant messages preserving tool_calls (issue #202
   expect(assistantMsgs?.length).toBe(1) // two assistant turns merged into one
   expect(assistantMsgs?.[0]?.tool_calls?.length).toBeGreaterThan(0)
 })
+
+test('sends reasoning_effort in request body when output_config.effort is set', async () => {
+  let capturedBody: Record<string, unknown> | undefined
+
+  globalThis.fetch = (async (_input, init) => {
+    capturedBody = JSON.parse(String(init?.body))
+
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-1',
+        model: 'gpt-5.2',
+        choices: [
+          {
+            message: { role: 'assistant', content: 'hello' },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  await client.beta.messages.create({
+    model: 'gpt-5.2',
+    system: 'test',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 64,
+    stream: false,
+    output_config: { effort: 'xhigh' },
+  })
+
+  expect(capturedBody).toBeDefined()
+  expect(capturedBody!.reasoning_effort).toBe('xhigh')
+})
+
+test('sends reasoning_effort from reasoningEffort client option', async () => {
+  let capturedBody: Record<string, unknown> | undefined
+
+  globalThis.fetch = (async (_input, init) => {
+    capturedBody = JSON.parse(String(init?.body))
+
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-1',
+        model: 'gpt-5.2',
+        choices: [
+          {
+            message: { role: 'assistant', content: 'hello' },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as FetchType
+
+  const client = createOpenAIShimClient({ reasoningEffort: 'high' }) as OpenAIShimClient
+
+  await client.beta.messages.create({
+    model: 'gpt-5.2',
+    system: 'test',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  expect(capturedBody).toBeDefined()
+  expect(capturedBody!.reasoning_effort).toBe('high')
+})
+
+test('maps max effort to xhigh for OpenAI models', async () => {
+  let capturedBody: Record<string, unknown> | undefined
+
+  globalThis.fetch = (async (_input, init) => {
+    capturedBody = JSON.parse(String(init?.body))
+
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-1',
+        model: 'gpt-5.2',
+        choices: [
+          {
+            message: { role: 'assistant', content: 'hello' },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as FetchType
+
+  const client = createOpenAIShimClient({ reasoningEffort: 'max' as any }) as OpenAIShimClient
+
+  await client.beta.messages.create({
+    model: 'gpt-5.2',
+    system: 'test',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  expect(capturedBody).toBeDefined()
+  expect(capturedBody!.reasoning_effort).toBe('xhigh')
+})

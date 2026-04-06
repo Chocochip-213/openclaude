@@ -17,6 +17,12 @@ import {
 import { Select } from './CustomSelect/index.js'
 import { Pane } from './design-system/Pane.js'
 import TextInput from './TextInput.js'
+import {
+  performBrowserOAuthLogin,
+  initiateDeviceCodeLogin,
+  hasCodexOAuthTokens,
+  type DeviceCodeInfo,
+} from '../services/api/codexOAuth.js'
 
 export type ProviderManagerResult = {
   action: 'saved' | 'cancelled'
@@ -36,6 +42,9 @@ type Screen =
   | 'select-active'
   | 'select-edit'
   | 'select-delete'
+  | 'chatgpt-oauth-method'
+  | 'chatgpt-oauth-browser'
+  | 'chatgpt-oauth-device'
 
 type DraftField = 'name' | 'baseUrl' | 'model' | 'apiKey'
 
@@ -323,6 +332,11 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
         description: 'Local LM Studio endpoint',
       },
       {
+        value: 'chatgpt-oauth',
+        label: 'ChatGPT Plus/Pro (OAuth Login)',
+        description: 'Login with your ChatGPT subscription — no API key needed',
+      },
+      {
         value: 'custom',
         label: 'Custom',
         description: 'Any OpenAI-compatible provider',
@@ -351,6 +365,10 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
           onChange={value => {
             if (value === 'skip') {
               closeWithCancelled('Provider setup skipped')
+              return
+            }
+            if (value === 'chatgpt-oauth') {
+              setScreen('chatgpt-oauth-method')
               return
             }
             startCreateFromPreset(value as ProviderPreset)
@@ -552,6 +570,65 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
     )
   }
 
+  function handleOAuthSuccess(tokens: { access_token: string; account_id?: string }): void {
+    const saved = addProviderProfile(
+      {
+        provider: 'openai',
+        name: 'ChatGPT Plus/Pro',
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+        model: 'codexplan',
+        apiKey: tokens.access_token,
+      },
+      { makeActive: true },
+    )
+    refreshProfiles()
+    if (saved) {
+      setStatusMessage(`ChatGPT login successful! Provider "${saved.name}" is now active.`)
+    } else {
+      setStatusMessage('ChatGPT login successful! Restart OpenClaude with a Codex model to use it.')
+    }
+    setScreen('menu')
+  }
+
+  function renderChatGPTOAuthMethod(): React.ReactNode {
+    const alreadyLoggedIn = hasCodexOAuthTokens()
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Text color="remember" bold>ChatGPT Plus/Pro Login</Text>
+        {alreadyLoggedIn && <Text color="yellow">Existing login found — re-login to refresh tokens.</Text>}
+        <Text dimColor>
+          Login with your ChatGPT subscription to use Codex models (GPT-5.x) without a separate API key.
+        </Text>
+        <Select
+          options={[
+            {
+              value: 'browser',
+              label: 'Login via Browser',
+              description: 'Opens your browser for ChatGPT login (recommended)',
+            },
+            {
+              value: 'device',
+              label: 'Login via Device Code',
+              description: 'Enter a code at auth.openai.com — for headless/SSH',
+            },
+            {
+              value: 'back',
+              label: 'Back',
+              description: 'Return to provider selection',
+            },
+          ]}
+          onChange={value => {
+            if (value === 'browser') setScreen('chatgpt-oauth-browser')
+            else if (value === 'device') setScreen('chatgpt-oauth-device')
+            else setScreen('select-preset')
+          }}
+          onCancel={() => setScreen('select-preset')}
+          visibleOptionCount={3}
+        />
+      </Box>
+    )
+  }
+
   let content: React.ReactNode
 
   switch (screen) {
@@ -560,6 +637,25 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
       break
     case 'form':
       content = renderForm()
+      break
+    case 'chatgpt-oauth-method':
+      content = renderChatGPTOAuthMethod()
+      break
+    case 'chatgpt-oauth-browser':
+      content = (
+        <ChatGPTBrowserOAuth
+          onSuccess={handleOAuthSuccess}
+          onBack={() => setScreen('chatgpt-oauth-method')}
+        />
+      )
+      break
+    case 'chatgpt-oauth-device':
+      content = (
+        <ChatGPTDeviceOAuth
+          onSuccess={handleOAuthSuccess}
+          onBack={() => setScreen('chatgpt-oauth-method')}
+        />
+      )
       break
     case 'select-active':
       content = renderProfileSelection(
@@ -610,4 +706,126 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
   }
 
   return <Pane color="permission">{content}</Pane>
+}
+
+// ─── ChatGPT OAuth Sub-Components ────────────────────────────────────────────
+
+function ChatGPTBrowserOAuth({
+  onSuccess,
+  onBack,
+}: {
+  onSuccess: (tokens: { access_token: string; account_id?: string }) => void
+  onBack: () => void
+}): React.ReactNode {
+  const [status, setStatus] = React.useState<'waiting' | 'error'>('waiting')
+  const [errorMsg, setErrorMsg] = React.useState('')
+
+  React.useEffect(() => {
+    let cancelled = false
+    performBrowserOAuthLogin()
+      .then(tokens => {
+        if (!cancelled) onSuccess(tokens)
+      })
+      .catch(err => {
+        if (!cancelled) {
+          setStatus('error')
+          setErrorMsg(err?.message ?? 'Unknown error')
+        }
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  if (status === 'error') {
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Text color="remember" bold>ChatGPT Login Failed</Text>
+        <Text color="error">{errorMsg}</Text>
+        <Select
+          options={[
+            { value: 'back', label: 'Back', description: 'Try again or choose another method' },
+          ]}
+          onChange={() => onBack()}
+          onCancel={() => onBack()}
+          visibleOptionCount={1}
+        />
+      </Box>
+    )
+  }
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Text color="remember" bold>ChatGPT Login</Text>
+      <Text>Opening browser for ChatGPT login...</Text>
+      <Text dimColor>Complete the login in your browser. This will update automatically.</Text>
+      <Text dimColor>Press Esc to cancel.</Text>
+    </Box>
+  )
+}
+
+function ChatGPTDeviceOAuth({
+  onSuccess,
+  onBack,
+}: {
+  onSuccess: (tokens: { access_token: string; account_id?: string }) => void
+  onBack: () => void
+}): React.ReactNode {
+  const [deviceInfo, setDeviceInfo] = React.useState<DeviceCodeInfo | null>(null)
+  const [status, setStatus] = React.useState<'loading' | 'waiting' | 'error'>('loading')
+  const [errorMsg, setErrorMsg] = React.useState('')
+
+  React.useEffect(() => {
+    let cancelled = false
+    initiateDeviceCodeLogin()
+      .then(({ info, poll }) => {
+        if (cancelled) return
+        setDeviceInfo(info)
+        setStatus('waiting')
+        return poll()
+      })
+      .then(tokens => {
+        if (!cancelled && tokens) onSuccess(tokens)
+      })
+      .catch(err => {
+        if (!cancelled) {
+          setStatus('error')
+          setErrorMsg(err?.message ?? 'Unknown error')
+        }
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  if (status === 'error') {
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Text color="remember" bold>ChatGPT Login Failed</Text>
+        <Text color="error">{errorMsg}</Text>
+        <Select
+          options={[
+            { value: 'back', label: 'Back', description: 'Try again or choose another method' },
+          ]}
+          onChange={() => onBack()}
+          onCancel={() => onBack()}
+          visibleOptionCount={1}
+        />
+      </Box>
+    )
+  }
+
+  if (status === 'loading' || !deviceInfo) {
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Text color="remember" bold>ChatGPT Device Code Login</Text>
+        <Text>Requesting device code...</Text>
+      </Box>
+    )
+  }
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Text color="remember" bold>ChatGPT Device Code Login</Text>
+      <Text>Visit: <Text bold color="cyan">{deviceInfo.verificationUrl}</Text></Text>
+      <Text>Enter code: <Text bold color="green">{deviceInfo.userCode}</Text></Text>
+      <Text dimColor>Waiting for authorization... Press Esc to cancel.</Text>
+    </Box>
+  )
 }
