@@ -288,3 +288,4 @@ test('getProviderWizardDefaults ignores poisoned current provider values', () =>
   expect(defaults.openAIBaseUrl).toBe('https://api.openai.com/v1')
   expect(defaults.geminiModel).toBe('gemini-2.0-flash')
 })
+

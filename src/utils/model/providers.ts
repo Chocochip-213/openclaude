@@ -12,20 +12,22 @@ export type APIProvider =
   | 'github'
   | 'codex'
 
-export function getAPIProvider(): APIProvider {
-  return isEnvTruthy(process.env.CLAUDE_CODE_USE_GEMINI)
+export function getAPIProvider(
+  processEnv: NodeJS.ProcessEnv = process.env,
+): APIProvider {
+  return isEnvTruthy(processEnv.CLAUDE_CODE_USE_GEMINI)
     ? 'gemini'
-    : isEnvTruthy(process.env.CLAUDE_CODE_USE_GITHUB)
+    : isEnvTruthy(processEnv.CLAUDE_CODE_USE_GITHUB)
       ? 'github'
-      : isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)
-        ? isCodexModel()
+      : isEnvTruthy(processEnv.CLAUDE_CODE_USE_OPENAI)
+        ? isCodexModel(processEnv)
           ? 'codex'
           : 'openai'
-        : isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)
+        : isEnvTruthy(processEnv.CLAUDE_CODE_USE_BEDROCK)
           ? 'bedrock'
-          : isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)
+          : isEnvTruthy(processEnv.CLAUDE_CODE_USE_VERTEX)
             ? 'vertex'
-            : isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
+            : isEnvTruthy(processEnv.CLAUDE_CODE_USE_FOUNDRY)
               ? 'foundry'
               : 'firstParty'
 }
@@ -33,10 +35,10 @@ export function getAPIProvider(): APIProvider {
 export function usesAnthropicAccountFlow(): boolean {
   return getAPIProvider() === 'firstParty'
 }
-function isCodexModel(): boolean {
+function isCodexModel(processEnv: NodeJS.ProcessEnv): boolean {
   return shouldUseCodexTransport(
-    process.env.OPENAI_MODEL || '',
-    process.env.OPENAI_BASE_URL ?? process.env.OPENAI_API_BASE,
+    processEnv.OPENAI_MODEL || '',
+    processEnv.OPENAI_BASE_URL ?? processEnv.OPENAI_API_BASE,
   )
 }
 

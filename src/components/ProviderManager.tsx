@@ -142,7 +142,11 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
   }
 
   function closeWithCancelled(message: string): void {
-    onDone({ action: 'cancelled', message })
+    onDone({
+      action: statusMessage ? 'saved' : 'cancelled',
+      activeProfileId,
+      message: statusMessage ?? message,
+    })
   }
 
   function startCreateFromPreset(preset: ProviderPreset): void {

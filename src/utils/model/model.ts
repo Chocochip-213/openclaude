@@ -78,12 +78,20 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
     // Read the model env var that matches the active provider to prevent
     // cross-provider leaks (e.g. ANTHROPIC_MODEL sent to the OpenAI API).
     const provider = getAPIProvider()
-    specifiedModel =
+    const envModel =
       (provider === 'gemini' ? process.env.GEMINI_MODEL : undefined) ||
-      (provider === 'openai' || provider === 'gemini' ? process.env.OPENAI_MODEL : undefined) ||
+      (provider === 'openai' || provider === 'codex' || provider === 'github'
+        ? process.env.OPENAI_MODEL
+        : undefined) ||
       (provider === 'firstParty' ? process.env.ANTHROPIC_MODEL : undefined) ||
-      settings.model ||
       undefined
+
+    const isProfileManagedEnv =
+      process.env.CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED === '1'
+
+    specifiedModel = isProfileManagedEnv
+      ? settings.model || envModel || undefined
+      : envModel || settings.model || undefined
   }
 
   // Ignore the user-specified model if it's not in the availableModels allowlist.

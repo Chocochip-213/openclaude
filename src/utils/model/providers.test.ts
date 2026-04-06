@@ -10,6 +10,8 @@ const originalEnv = {
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_API_BASE: process.env.OPENAI_API_BASE,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
+  CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED:
+    process.env.CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED,
 }
 
 afterEach(() => {
@@ -22,6 +24,8 @@ afterEach(() => {
   process.env.OPENAI_BASE_URL = originalEnv.OPENAI_BASE_URL
   process.env.OPENAI_API_BASE = originalEnv.OPENAI_API_BASE
   process.env.OPENAI_MODEL = originalEnv.OPENAI_MODEL
+  process.env.CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED =
+    originalEnv.CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED
 })
 
 async function importFreshProvidersModule() {
@@ -106,4 +110,21 @@ test('official OpenAI base URLs now keep provider detection on openai for aliase
 
   const { getAPIProvider } = await importFreshProvidersModule()
   expect(getAPIProvider()).toBe('openai')
+})
+
+test('provider detection accepts an explicit process env override', async () => {
+  clearProviderEnv()
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_MODEL = 'codexplan'
+
+  const { getAPIProvider } = await importFreshProvidersModule()
+
+  expect(
+    getAPIProvider({
+      ...process.env,
+      OPENAI_MODEL: 'gpt-5.4',
+      OPENAI_BASE_URL: 'https://api.openai.com/v1',
+    }),
+  ).toBe('openai')
+  expect(getAPIProvider()).toBe('codex')
 })
